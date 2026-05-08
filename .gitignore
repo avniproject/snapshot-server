@@ -1,0 +1,20 @@
+node_modules/
+.env
+.env.local
+*.log
+
+# state DB + WAL/SHM files
+snapshot-db/
+
+# generated snapshot output
+snapshots/
+
+# stray *.db artifacts
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# editor
+.idea/
+.vscode/
