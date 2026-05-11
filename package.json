@@ -9,9 +9,11 @@
   },
   "scripts": {
     "start": "node src/index.js",
-    "compare-dbs": "node scripts/compare-dbs.js"
+    "compare-dbs": "node scripts/compare-dbs.js",
+    "stats": "node scripts/snapshot-stats.js"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.668.0",
     "better-sqlite3": "^11.5.0",
     "commander": "^12.1.0",
     "dotenv": "^16.4.5",

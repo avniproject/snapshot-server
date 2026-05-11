@@ -46,8 +46,8 @@ export class Worker {
                 const requestRow = this.snapshotRequestRepository.getSnapshotRequestById(job.request_id);
                 const result = await this.snapshotJob.run(job, requestRow);
                 this.snapshotRequestRepository.markSnapshotUserJobReady(job.id, {
-                    s3Key: result.outputPath,  // local path for now; S3 key when uploader lands
-                    sha256: null,
+                    s3Key: result.s3Key,
+                    sha256: result.sha256,
                     sizeBytes: result.sizeBytes,
                 });
             } catch (e) {

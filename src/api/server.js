@@ -13,6 +13,15 @@ import {logger} from '../util/logger.js';
  *   GET    /health                                       liveness check
  *
  * `:key` is the composite `<dbUser>-<orgSeq>` (e.g. `apfodisha-1`).
+ *
+ * POST /requests body:
+ *   { dbUser, mode?, requestedBy?, usernames?, mediaDirectory? }
+ *
+ * Default mode resolves the org and full user list via the super-admin
+ * endpoints. When `usernames` is provided, the super-admin calls are skipped
+ * entirely — used by QA to test against staging cognito with a regular
+ * user's AUTH_TOKEN (no super-admin needed). `mediaDirectory` defaults to
+ * `dbUser` in that path.
  */
 export function createApi({snapshotRequestRepository, avniSuperAdminClient}) {
     const app = express();
@@ -27,26 +36,44 @@ export function createApi({snapshotRequestRepository, avniSuperAdminClient}) {
 
     app.post('/requests', async (req, res, next) => {
         try {
-            const {dbUser, mode = 'normal', requestedBy} = req.body ?? {};
+            const {
+                dbUser,
+                mode = 'normal',
+                requestedBy,
+                usernames: bodyUsernames,
+                mediaDirectory: bodyMediaDirectory,
+            } = req.body ?? {};
             if (!dbUser || typeof dbUser !== 'string') {
                 return res.status(400).json({error: 'dbUser (string) is required'});
             }
             if (!['normal', 'clean'].includes(mode)) {
                 return res.status(400).json({error: `mode must be 'normal' or 'clean'`});
             }
+            if (bodyUsernames !== undefined && (!Array.isArray(bodyUsernames) || bodyUsernames.some(u => typeof u !== 'string' || !u))) {
+                return res.status(400).json({error: 'usernames must be a non-empty array of strings'});
+            }
 
-            const org = await avniSuperAdminClient.getOrgByDbUser(dbUser);
-            if (!org) {
-                return res.status(404).json({error: `no organisation found for dbUser=${dbUser}`});
+            let usernames;
+            let mediaDirectory;
+            if (Array.isArray(bodyUsernames) && bodyUsernames.length > 0) {
+                usernames = bodyUsernames;
+                mediaDirectory = bodyMediaDirectory ?? dbUser;
+            } else {
+                const org = await avniSuperAdminClient.getOrgByDbUser(dbUser);
+                if (!org) {
+                    return res.status(404).json({error: `no organisation found for dbUser=${dbUser}`});
+                }
+                const users = await avniSuperAdminClient.listUsersForOrg(org.id);
+                if (users.length === 0) {
+                    return res.status(400).json({error: `organisationId=${org.id} has no active users`});
+                }
+                usernames = users.map(u => u.username);
+                mediaDirectory = org.mediaDirectory;
             }
-            const users = await avniSuperAdminClient.listUsersForOrg(org.id);
-            if (users.length === 0) {
-                return res.status(400).json({error: `organisationId=${org.id} has no active users`});
-            }
-            const usernames = users.map(u => u.username);
 
             const snapshotRequest = snapshotRequestRepository.createSnapshotRequestAndUserJobs({
                 dbUser,
+                mediaDirectory,
                 mode,
                 requestedBy: requestedBy ?? null,
                 usernames,

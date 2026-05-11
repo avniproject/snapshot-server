@@ -23,7 +23,7 @@ export class SnapshotRequestRepository {
         this.db = db;
     }
 
-    createSnapshotRequestAndUserJobs({dbUser, mode = 'normal', requestedBy = null, usernames}) {
+    createSnapshotRequestAndUserJobs({dbUser, mediaDirectory, mode = 'normal', requestedBy = null, usernames}) {
         const tx = this.db.transaction(() => {
             const maxRow = this.db
                 .prepare('SELECT COALESCE(MAX(org_seq), 0) AS m FROM snapshot_request WHERE db_user = ?')
@@ -32,17 +32,17 @@ export class SnapshotRequestRepository {
 
             const info = this.db
                 .prepare(`
-                    INSERT INTO snapshot_request (db_user, org_seq, mode, requested_by)
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO snapshot_request (db_user, media_directory, org_seq, mode, requested_by)
+                    VALUES (?, ?, ?, ?, ?)
                 `)
-                .run(dbUser, orgSeq, mode, requestedBy);
+                .run(dbUser, mediaDirectory, orgSeq, mode, requestedBy);
             const id = Number(info.lastInsertRowid);
 
             const insertJob = this.db.prepare(`
-                INSERT INTO snapshot_user_job (request_id, username, db_user)
-                VALUES (?, ?, ?)
+                INSERT INTO snapshot_user_job (request_id, username)
+                VALUES (?, ?)
             `);
-            for (const username of usernames) insertJob.run(id, username, dbUser);
+            for (const username of usernames) insertJob.run(id, username);
 
             return {id, dbUser, orgSeq, key: _buildRequestKey(dbUser, orgSeq)};
         });

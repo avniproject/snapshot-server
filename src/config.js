@@ -21,14 +21,13 @@ export const config = {
     // Required when avni-server runs with AVNI_IDP_TYPE=cognito (staging).
     // Empty in production where the dedicated avni-server instance runs with
     // AVNI_IDP_TYPE=none and reads USER-NAME instead.
-    authToken: optional('AUTH_TOKEN', ''),
+    a: optional('AUTH_TOKEN', ''),
 
     // Username used for super-admin-only lookups (org search, user list).
     // `admin` is the account-admin user seeded by avni-server's V1_142.1
     // migration in every standard install — hardcoded since there's no
     // realistic case for overriding it.
     adminUser: 'admin',
-
     logLevel: optional('LOG_LEVEL', 'info'),
     stateDbPath: optional('STATE_DB_PATH', './snapshot-db/snapshot-server.db'),
     snapshotsDir: optional('SNAPSHOTS_DIR', './snapshots'),
@@ -37,7 +36,8 @@ export const config = {
     maxConcurrency: intOpt('MAX_CONCURRENCY', 1),
     httpPort: intOpt('HTTP_PORT', 3000),
 
-    s3Bucket: optional('S3_BUCKET', ''),
-    s3Prefix: optional('S3_PREFIX', 'snapshot-v2/sqlite'),
-    awsRegion: optional('AWS_REGION', 'ap-south-1'),
+    s3Bucket:          optional('OPENCHS_BUCKET_NAME',             ''),
+    awsRegion:         optional('OPENCHS_AWS_REGION',              'ap-south-1'),
+    awsAccessKeyId:    optional('OPENCHS_IAM_USER_ACCESS_KEY',     ''),
+    awsSecretAccessKey: optional('OPENCHS_IAM_USER_SECRET_ACCESS_KEY', ''),
 };

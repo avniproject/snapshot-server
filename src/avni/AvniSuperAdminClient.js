@@ -14,9 +14,14 @@ import {config} from '../config.js';
  * `IdpType=none` filter authenticates as that super-admin.
  *
  * Endpoints used:
- *   GET /organisation/search/find?dbUser=<dbUser>&size=1   (assertIsSuperAdmin)
+ *   GET /organisation/search/find?dbUser=<dbUser>&size=100  (assertIsSuperAdmin)
  *   GET /user/search/findByOrganisation?organisationId=<id>&page=&size=
  *       (PrivilegeType.EditUserConfiguration)
+ *
+ * Note: /organisation/search/find does a case-insensitive LIKE '%dbUser%' on
+ * the server (see OrganisationController.java) — so dbUser=apfodisha would
+ * also match apfodisha_dev, apfodishamaha, etc. We fetch a generous page and
+ * filter client-side for an exact match before returning.
  */
 export class AvniSuperAdminClient {
     constructor({adminUser = config.adminUser, baseUrl = config.avniServerUrl, pageSize = 200} = {}) {
@@ -27,10 +32,16 @@ export class AvniSuperAdminClient {
 
     async getOrgByDbUser(dbUser) {
         return this._asAdmin(async () => {
-            const url = `${this.baseUrl}/organisation/search/find?dbUser=${encodeURIComponent(dbUser)}&size=1`;
+            const url = `${this.baseUrl}/organisation/search/find?dbUser=${encodeURIComponent(dbUser)}&size=100`;
             const page = await getJSON(url);
             const content = page?.content ?? page?._embedded?.organisations ?? [];
-            return content.length === 0 ? null : content[0];
+            const exact = content.filter(o => o?.dbUser === dbUser);
+            if (exact.length === 0) return null;
+            if (exact.length > 1) {
+                const ids = exact.map(o => o.id).join(', ');
+                throw new Error(`Expected one organisation with dbUser="${dbUser}", found ${exact.length} (ids: ${ids})`);
+            }
+            return exact[0];
         });
     }
 
