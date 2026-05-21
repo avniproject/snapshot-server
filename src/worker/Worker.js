@@ -44,7 +44,9 @@ export class Worker {
                 // Inside the try so any unexpected error here marks the job
                 // failed instead of crashing the whole worker loop.
                 const requestRow = this.snapshotRequestRepository.getSnapshotRequestById(job.request_id);
-                const result = await this.snapshotJob.run(job, requestRow);
+                const onCursorReady = (cursor) =>
+                    this.snapshotRequestRepository.saveSnapshotUserJobResumeCursor(job.id, cursor);
+                const result = await this.snapshotJob.run(job, requestRow, {onCursorReady});
                 this.snapshotRequestRepository.markSnapshotUserJobReady(job.id, {
                     s3Key: result.s3Key,
                     sha256: result.sha256,

@@ -27,9 +27,14 @@ export class SnapshotJob {
         this.s3Uploader = s3Uploader;
     }
 
-    async run(job, requestRow) {
+    async run(job, requestRow, {onCursorReady = null} = {}) {
         return requestContext.run({username: job.username}, async () => {
-            const localPath = path.resolve(
+            // mode=clean ignores any prior cursor: we're explicitly blowing
+            // away local + S3 state so resume would be meaningless.
+            const isClean = requestRow?.mode === 'clean';
+            const cursor = (!isClean && job.resume_cursor) ? this._parseCursor(job.resume_cursor) : null;
+
+            const localPath = cursor?.localPath ?? path.resolve(
                 config.snapshotsDir,
                 fsSafe(requestRow.db_user),
                 fsSafe(job.username),
@@ -37,7 +42,7 @@ export class SnapshotJob {
             );
             const s3Key = `${requestRow.media_directory}/snapshots/${job.username}/${path.basename(localPath)}`;
 
-            if (requestRow?.mode === 'clean') {
+            if (isClean) {
                 this._cleanUserSnapshotDir(path.dirname(localPath));
                 if (this.s3Uploader.isEnabled()) {
                     const userS3Prefix = `${requestRow.media_directory}/snapshots/${job.username}/`;
@@ -46,15 +51,32 @@ export class SnapshotJob {
             }
 
             logger.info(
-                {jobId: job.id, user: job.username, dbUser: requestRow.db_user, local: localPath, s3Key, mode: requestRow?.mode},
+                {jobId: job.id, user: job.username, dbUser: requestRow.db_user, local: localPath, s3Key, mode: requestRow?.mode, resuming: Boolean(cursor)},
                 'snapshot job starting'
             );
 
             const start = Date.now();
+            // createSqliteDb is idempotent — opens the existing file and skips
+            // migrations that have already been applied (schema_version check).
             const db = createSqliteDb(localPath);
             try {
                 const persister = new Persister(db);
-                const runner = new SyncRunner({db, persister});
+                // Fresh run: persist the cursor as soon as /v2/syncDetails
+                // returns so any subsequent crash can resume. Resume run: the
+                // cursor is already on the row; nothing new to write.
+                const onSyncDetailsFetched = cursor
+                    ? null
+                    : (async ({endDateTime, syncDetails}) => {
+                        if (onCursorReady) {
+                            await onCursorReady({localPath, endDateTime, syncDetails});
+                        }
+                    });
+                const runner = new SyncRunner({
+                    db,
+                    persister,
+                    resumeContext: cursor ? {endDateTime: cursor.endDateTime, syncDetails: cursor.syncDetails} : null,
+                    onSyncDetailsFetched,
+                });
                 await runner.run();
             } finally {
                 db.close();
@@ -86,6 +108,24 @@ export class SnapshotJob {
             );
             return result;
         });
+    }
+
+    _parseCursor(cursorJson) {
+        try {
+            const parsed = JSON.parse(cursorJson);
+            if (!parsed?.localPath || !parsed?.endDateTime || !Array.isArray(parsed?.syncDetails)) {
+                logger.warn({cursor: cursorJson}, 'resume cursor missing required fields; starting fresh');
+                return null;
+            }
+            if (!fs.existsSync(parsed.localPath)) {
+                logger.warn({localPath: parsed.localPath}, 'resume cursor file gone; starting fresh');
+                return null;
+            }
+            return parsed;
+        } catch (e) {
+            logger.warn({err: e.message, cursor: cursorJson}, 'resume cursor unparseable; starting fresh');
+            return null;
+        }
     }
 
     _cleanUserSnapshotDir(dir) {

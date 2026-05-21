@@ -88,4 +88,26 @@ export class EntitySyncStatusService {
     findAll() {
         return Array.from(this._rows.values());
     }
+
+    /**
+     * Resume support. A fresh process has an empty _rows map; without this,
+     * the first `get()` call on resume would create a fresh REALLY_OLD_DATE
+     * row with a new random UUID, and avni-server's /v2/syncDetails would
+     * echo that new UUID back (it passes the client's contracts through —
+     * see SyncController.getChangedEntities). saveOrUpdate would then INSERT
+     * a duplicate row beside the original, leaving an orphan in the snapshot
+     * DB. Loading every existing row first — including those still at
+     * REALLY_OLD_DATE because they were seeded by updateAsPerSyncDetails but
+     * never pulled — preserves their UUIDs so subsequent upserts hit in
+     * place. Returns the number of rows rehydrated.
+     */
+    rehydrateFromDb(db) {
+        const rows = db.prepare('SELECT uuid, entity_name, loaded_since, entity_type_uuid FROM entity_sync_status').all();
+        for (const r of rows) {
+            const loadedSince = r.loaded_since != null ? new Date(r.loaded_since) : EntitySyncStatus.REALLY_OLD_DATE;
+            const row = EntitySyncStatus.create(r.entity_name, loadedSince, r.uuid, r.entity_type_uuid ?? '');
+            this._rows.set(this._key(row.entityName, row.entityTypeUuid), row);
+        }
+        return rows.length;
+    }
 }

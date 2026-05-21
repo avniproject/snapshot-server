@@ -57,12 +57,31 @@ function transformResourceToEntity(entityMetaData, entityResources) {
 }
 
 export class SyncRunner {
-    constructor({db, persister}) {
+    /**
+     * @param {object} args
+     * @param {Database} args.db                                     underlying better-sqlite3 instance for the snapshot DB
+     * @param {Persister} args.persister
+     * @param {{endDateTime: string, syncDetails: Array}} [args.resumeContext]
+     *        When present, skip /v2/syncDetails and reuse the stored values
+     *        so a resumed run pins the same time window across entities.
+     *        EntitySyncStatusService is rehydrated from the partial DB
+     *        before sync starts.
+     * @param {(payload: {endDateTime: string, syncDetails: Array}) => Promise<void>} [args.onSyncDetailsFetched]
+     *        Fresh-run callback fired right after /v2/syncDetails returns
+     *        so the caller can persist the resume cursor before any pages
+     *        are pulled. Not called when resumeContext is provided.
+     */
+    constructor({db, persister, resumeContext = null, onSyncDetailsFetched = null}) {
         this.deviceId = 'snapshot-server';
+        this.rawDb = db;
+        this.resumeContext = resumeContext;
+        this.onSyncDetailsFetched = onSyncDetailsFetched;
 
         // Adapter wiring — replaces SyncService.init() and BaseService deps.
         this.db = new SqliteFacade(db, persister);
-        this.entityService = new EntityServiceStub();
+        // EntityServiceStub gets the raw DB so it can read-through hydrate
+        // entities already persisted in a prior attempt (resume support).
+        this.entityService = new EntityServiceStub({db});
         this.entitySyncStatusService = new EntitySyncStatusService(persister);
         // ConventionalRestClient takes (settingsService, privilegeService) but
         // never reads privilegeService — it's a dead param in upstream too.
@@ -83,10 +102,22 @@ export class SyncRunner {
     async run() {
         const allEntitiesMetaData = EntityMetaData.model();
 
+        // Resume support: load existing entity_sync_status rows from the
+        // partial snapshot DB BEFORE seeding so we preserve their uuids
+        // and loaded_since (avni-server echoes the client's contracts back
+        // verbatim — if we let _seedEntitySyncStatuses mint fresh uuids,
+        // updateAsPerSyncDetails would INSERT duplicates beside the originals).
+        // Safe to run on a fresh DB too: empty table → no-op.
+        const rehydrated = this.entitySyncStatusService.rehydrateFromDb(this.rawDb);
+        if (rehydrated > 0) {
+            logger.info({rows: rehydrated}, 'entity_sync_status rehydrated from partial DB');
+        }
+
         // Seed entitySyncStatusService the same way EntitySyncStatusService.setup
         // does on first install (one row per to-be-pulled entity, REALLY_OLD_DATE,
         // blank entityTypeUuid). The snapshot DB will then carry these rows so
-        // the device can resume sync after restoring.
+        // the device can resume sync after restoring. For rehydrated entries,
+        // get() returns the existing row and seeding is a no-op.
         this._seedEntitySyncStatuses();
 
         // No-op callbacks for the parameters dataServerSync uses for UI
@@ -155,7 +186,22 @@ export class SyncRunner {
         // Push path skipped — snapshot-server is a read-only generator.
         if (isOnlyUploadRequired) return;
 
-        let {syncDetails, endDateTime, now} = await this.getSyncDetails();
+        let syncDetails, endDateTime, now;
+        if (this.resumeContext) {
+            // Pinned upper bound from the original attempt — crucial: a fresh
+            // endDateTime here would make resumed entities span a wider time
+            // window than already-pulled entities, breaking cross-entity
+            // consistency of the snapshot.
+            syncDetails  = this.resumeContext.syncDetails;
+            endDateTime  = this.resumeContext.endDateTime;
+            now          = this.resumeContext.endDateTime;
+            logger.info({endDateTime, entities: syncDetails.length}, 'resuming with pinned endDateTime');
+        } else {
+            ({syncDetails, endDateTime, now} = await this.getSyncDetails());
+            if (this.onSyncDetailsFetched) {
+                await this.onSyncDetailsFetched({endDateTime, syncDetails});
+            }
+        }
 
         const entitiesWithoutSubjectMigrationAndResetSync = _.filter(allEntitiesMetaData, ({entityName}) => !_.includes(['ResetSync', 'SubjectMigration'], entityName));
         const filteredMetadata = _.filter(entitiesWithoutSubjectMigrationAndResetSync, ({entityName}) => _.find(syncDetails, sd => sd.entityName === entityName));
