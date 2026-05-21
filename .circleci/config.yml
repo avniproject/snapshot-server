@@ -1,0 +1,167 @@
+version: 2.1
+
+orbs:
+  aws-cli: circleci/aws-cli@4.1.1
+
+commands:
+  deploy_as_service:
+    description: Deployment of snapshot-server as a systemd service
+    parameters:
+      env:
+        type: string
+        default: "snapshot"
+    steps:
+      - attach_workspace:
+          at: ~/artifacts
+
+      - run: sudo apt-get install make openssl
+
+      - run: |
+          cd ~/
+          curl -L -O https://github.com/avniproject/avni-infra/archive/master.zip
+          mv ~/master.zip ~/infra.zip
+
+      - run: |
+          cd ~/
+          unzip infra.zip
+          mv avni-infra-master avni-infra
+          rm -rf infra.zip
+
+      - run: echo $ANSIBLE_VAULT_PASS > ~/.vault-pass.txt
+
+      - run: |
+          cd ~/avni-infra/configure
+          VAULT_PASSWORD_FILE=~/.vault-pass.txt app_zip_path=~/artifacts/ make deploy-snapshot-server-<< parameters.env >>
+
+      - run: rm ~/.vault-pass.txt
+
+  setup_server_access:
+    description: Generate and copy temporary keys to server
+    parameters:
+      instance-id:
+        type: string
+      os-user:
+        type: string
+        default: ubuntu
+      availability-zone:
+        type: string
+        default: ap-south-1a
+    steps:
+      - run: rm -rf /tmp/temp_rsa_key*
+      - run: ssh-keygen -b 2048 -t rsa -f /tmp/temp_rsa_key -q -N ""
+      - run: eval `ssh-agent -s`
+      - run: ssh-add /tmp/temp_rsa_key
+      - run: |
+          aws ec2-instance-connect send-ssh-public-key --instance-id << parameters.instance-id >> --availability-zone << parameters.availability-zone >> --instance-os-user << parameters.os-user >> --no-paginate --ssh-public-key file:///tmp/temp_rsa_key.pub --output text | head -1
+
+jobs:
+  test:
+    docker:
+      - image: cimg/node:20.18
+    working_directory: ~/snapshot-server
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - v1-deps-{{ checksum "package-lock.json" }}
+            - v1-deps-
+      - run: npm ci
+      - save_cache:
+          paths:
+            - ~/snapshot-server/node_modules
+          key: v1-deps-{{ checksum "package-lock.json" }}
+      # No unit tests yet; placeholder so the workflow has a "test" stage to
+      # gate build on once tests are wired up.
+      - run: echo "no unit tests configured yet"
+
+  build:
+    docker:
+      - image: cimg/node:20.18
+    resource_class: medium
+    working_directory: ~/snapshot-server
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - v1-deps-{{ checksum "package-lock.json" }}
+            - v1-deps-
+      # Production-only install. better-sqlite3 ships prebuilt linux-x64
+      # binaries so the tarball is portable to the target EC2 without
+      # native compilation.
+      - run: npm ci --omit=dev
+      - run: mkdir -p ~/artifacts
+      - run: |
+          cd ~/snapshot-server
+          tar -czf ~/artifacts/snapshot-server.tgz \
+            src package.json package-lock.json node_modules
+      - persist_to_workspace:
+          root: ~/artifacts
+          paths:
+            - snapshot-server.tgz
+      - store_artifacts:
+          path: ~/artifacts
+
+  STAGING_deploy:
+    docker:
+      - image: cimg/deploy:2023.09
+    working_directory: ~/
+    steps:
+      - aws-cli/setup:
+          role_arn: "arn:aws:iam::118388513628:role/avni_circleci_instance_connect"
+          region: "ap-south-1"
+      - setup_server_access:
+          # Same EC2 as avni-server's STAGING_deploy — snapshot-server runs
+          # alongside it on the staging box so we can smoke-test the deploy
+          # path without provisioning a dedicated instance.
+          instance-id: "i-0879e9c88952968ea"
+          availability-zone: "ap-south-1a"
+      - deploy_as_service:
+          env: "staging"
+
+  SNAPSHOT_deploy:
+    docker:
+      - image: cimg/deploy:2023.09
+    working_directory: ~/
+    steps:
+      - aws-cli/setup:
+          role_arn: "arn:aws:iam::118388513628:role/avni_circleci_instance_connect"
+          region: "ap-south-1"
+      - setup_server_access:
+          # TODO: replace with the snapshot-server EC2 instance id once
+          # provisioned. Same convention as avni-server's per-env entries.
+          instance-id: "TODO_SNAPSHOT_INSTANCE_ID"
+          availability-zone: "ap-south-1a"
+      - deploy_as_service:
+          env: "snapshot"
+
+tags_filter: &tags_filter
+  filters:
+    tags:
+      only: /.*/
+
+workflows:
+  version: 2
+  test_and_build_and_deploy:
+    jobs:
+    - test:
+        <<: *tags_filter
+    - build:
+        <<: *tags_filter
+        requires:
+          - test
+    - STAGING_approve:
+        type: approval
+        requires:
+          - build
+    - STAGING_deploy:
+        context: non-prod-deploy
+        requires:
+          - STAGING_approve
+    - SNAPSHOT_approve:
+        type: approval
+        requires:
+          - build
+    - SNAPSHOT_deploy:
+        context: non-prod-deploy
+        requires:
+          - SNAPSHOT_approve
