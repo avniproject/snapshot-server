@@ -40,7 +40,10 @@ export class SnapshotJob {
                 fsSafe(job.username),
                 `${timestampForFilename()}.db`
             );
-            const s3Key = `${requestRow.media_directory}/snapshots/${job.username}/${path.basename(localPath)}`;
+            // .zip suffix because S3Uploader wraps the .db in a single-entry zip
+            // before upload (parity with the Realm fast-sync mobile-database-backup
+            // shape; the device unzips and finds the .db inside).
+            const s3Key = `${requestRow.media_directory}/snapshots/${job.username}/${path.basename(localPath)}.zip`;
 
             if (isClean) {
                 this._cleanUserSnapshotDir(path.dirname(localPath));

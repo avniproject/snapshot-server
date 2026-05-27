@@ -4,7 +4,9 @@ import {
     ListObjectsV2Command,
     DeleteObjectsCommand,
 } from '@aws-sdk/client-s3';
+import AdmZip from 'adm-zip';
 import fs from 'node:fs';
+import path from 'node:path';
 import crypto from 'node:crypto';
 import {config} from '../config.js';
 import {logger} from '../util/logger.js';
@@ -40,8 +42,17 @@ export class S3Uploader {
         return this._client;
     }
 
+    /**
+     * Reads `localPath`, wraps it in a single-entry zip (entry name = basename
+     * of localPath), uploads the zip bytes to `s3Key`. Mirrors the Realm
+     * mobile-database-backup shape: the device downloads a zip, unzips it,
+     * and finds a single DB file inside. sha256 / sizeBytes returned are of
+     * the zip payload (what actually lives in S3).
+     */
     async uploadFile(localPath, s3Key) {
-        const body = fs.readFileSync(localPath);
+        const zip = new AdmZip();
+        zip.addLocalFile(localPath, '', path.basename(localPath));
+        const body = zip.toBuffer();
         const sha256 = crypto.createHash('sha256').update(body).digest('hex');
         const sizeBytes = body.length;
 
@@ -49,7 +60,7 @@ export class S3Uploader {
             Bucket: this.bucket,
             Key: s3Key,
             Body: body,
-            ContentType: 'application/octet-stream',
+            ContentType: 'application/zip',
         }));
 
         return {
