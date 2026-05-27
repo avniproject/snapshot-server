@@ -21,7 +21,7 @@ export const config = {
     // Required when avni-server runs with AVNI_IDP_TYPE=cognito (staging).
     // Empty in production where the dedicated avni-server instance runs with
     // AVNI_IDP_TYPE=none and reads USER-NAME instead.
-    a: optional('AUTH_TOKEN', ''),
+    authToken: optional('AUTH_TOKEN', ''),
 
     // Username used for super-admin-only lookups (org search, user list).
     // `admin` is the account-admin user seeded by avni-server's V1_142.1
@@ -35,6 +35,8 @@ export const config = {
     replicaLagMinutes: intOpt('REPLICA_LAG_MINUTES', 10),
     maxConcurrency: intOpt('MAX_CONCURRENCY', 1),
     httpPort: intOpt('HTTP_PORT', 3000),
+    // Per-page fetch timeout (ms).
+    fetchTimeoutMs: intOpt('FETCH_TIMEOUT_MS', 300000),
 
     s3Bucket:          optional('OPENCHS_BUCKET_NAME',             ''),
     awsRegion:         optional('OPENCHS_AWS_REGION',              'ap-south-1'),

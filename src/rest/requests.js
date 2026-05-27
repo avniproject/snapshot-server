@@ -60,7 +60,7 @@ const fetchFactory = (endpoint, method = "GET", params, fetchWithoutTimeout) => 
     // </SS>
 };
 
-const fetchWithTimeOut = (url, options, timeout = 60000) => {
+const fetchWithTimeOut = (url, options, timeout = config.fetchTimeoutMs) => {
     return Promise.race([
         fetch(url, options),
         new Promise((_resolve, reject) =>
