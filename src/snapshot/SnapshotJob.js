@@ -40,10 +40,15 @@ export class SnapshotJob {
                 fsSafe(job.username),
                 `${timestampForFilename()}.db`
             );
-            // .zip suffix because S3Uploader wraps the .db in a single-entry zip
-            // before upload (parity with the Realm fast-sync mobile-database-backup
-            // shape; the device unzips and finds the .db inside).
-            const s3Key = `${requestRow.media_directory}/snapshots/${job.username}/${path.basename(localPath)}.zip`;
+            // No .zip extension on the key even though S3Uploader uploads zipped
+            // bytes. avni-server signs the download URL via generateMediaUploadUrl,
+            // which binds Content-Type into the signature based on the file
+            // extension — a .zip key would require the device to send a matching
+            // Content-Type header on GET or S3 returns 403. The Realm
+            // mobile-database-backup flow avoids this the same way (extensionless
+            // key). The device's BackupRestoreSqliteService unzips by content,
+            // not extension.
+            const s3Key = `${requestRow.media_directory}/snapshots/${job.username}/${path.basename(localPath)}`;
 
             if (isClean) {
                 this._cleanUserSnapshotDir(path.dirname(localPath));
