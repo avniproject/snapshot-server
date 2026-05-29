@@ -10,7 +10,8 @@
   "scripts": {
     "start": "node src/index.js",
     "compare-dbs": "node scripts/compare-dbs.js",
-    "stats": "node scripts/snapshot-stats.js"
+    "stats": "node scripts/snapshot-stats.js",
+    "test": "node --test"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.668.0",

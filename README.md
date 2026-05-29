@@ -115,6 +115,14 @@ SELECT entity_name, entity_type_uuid, datetime(loaded_since/1000, 'unixepoch')
   FROM entity_sync_status WHERE loaded_since > 0;
 ```
 
+## Excluded entities
+
+`src/snapshot/excludedEntities.js` is the single source of truth for entity types kept out of a snapshot. Today the only actively-filtered entity is `IdentifierAssignment` (pulling it makes avni-server `UPDATE` the identifier pool, which fails on a read-only replica). The file also documents the entities already handled upstream — `syncPullRequired: false` ones (telemetry, the `EntityApprovalStatus` base) dropped by `EntityMetaData.getEntitiesToBePulled()`, and device-local ones not in `EntityMetaData.model()` at all — plus the ones intentionally kept (`MyGroups`, `UserSubjectAssignment`, `UserInfo`, `News`).
+
+**When avni-client's `EntityMetaData` gains a new synced type, evaluate it against this list before the next rollout wave** — decide whether it's user/device-private, telemetry, device-local, or genuine shared data, and add it to `SNAPSHOT_EXCLUDED_ENTITIES` (or leave it) accordingly.
+
+`npm test` covers the filter logic (`test/excludedEntities.test.js`).
+
 ## Auth modes
 
 `avni-server` reads either `USER-NAME` (when `AVNI_IDP_TYPE=none`) or validates `AUTH-TOKEN` (when `AVNI_IDP_TYPE=cognito`). snapshot-server always sends both headers so the same client code works against either deployment.
