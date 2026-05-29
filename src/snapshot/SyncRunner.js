@@ -8,6 +8,7 @@ import {SqliteFacade} from '../snapshotdb/SqliteFacade.js';
 import {SettingsServiceStub} from './SettingsServiceStub.js';
 import {EntityServiceStub} from './EntityServiceStub.js';
 import {EntitySyncStatusService} from './EntitySyncStatusService.js';
+import {isExcludedFromSnapshot} from './excludedEntities.js';
 import {logger} from '../util/logger.js';
 import {config} from '../config.js';
 
@@ -100,7 +101,13 @@ export class SyncRunner {
      * Username comes from the surrounding requestContext.run({username}, ...).
      */
     async run() {
-        const allEntitiesMetaData = EntityMetaData.model();
+        // Drop excluded entities once, here. Both the pull set (filteredMetadata)
+        // and the checkpoint set (currentVersionEntitySyncDetails) in
+        // dataServerSync derive from allEntitiesMetaData, so filtering at this
+        // single chokepoint keeps excluded entities out of both — no data
+        // pulled and no entity_sync_status row written for them.
+        const allEntitiesMetaData = EntityMetaData.model()
+            .filter(e => !isExcludedFromSnapshot(e.entityName));
 
         // Resume support: load existing entity_sync_status rows from the
         // partial snapshot DB BEFORE seeding so we preserve their uuids
@@ -141,6 +148,9 @@ export class SyncRunner {
         const pulled = EntityMetaData.getEntitiesToBePulled();
         for (const entity of pulled) {
             if (!_.isEmpty(entity.privilegeParam)) continue;
+            // Don't seed excluded entities — keeps them out of the
+            // /v2/syncDetails POST body so they're never requested.
+            if (isExcludedFromSnapshot(entity.entityName)) continue;
             // Triggers create-and-store of the seed row.
             this.entitySyncStatusService.get(entity.entityName, '');
         }
