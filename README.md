@@ -105,8 +105,17 @@ SELECT * FROM snapshot_user_job ORDER BY id DESC LIMIT 10;
 
 ## Snapshot output
 
-Generated SQLite files live under `snapshots/<dbUser>/<username>/`. Inspect:
+**Stable paths, one snapshot per user.** Both local and S3 use a stable filename — `snapshot.db` — so at most one file per user exists at any time:
 
+- **Local**: `snapshots/<dbUser>/<username>/snapshot.db`. Successful runs delete the file post-upload; failed runs leave it on disk for the next attempt to resume (gated by the resume_cursor — no cursor means we wipe the orphan and start fresh).
+- **S3**: `s3://<bucket>/<mediaDirectory>/snapshots/<username>/snapshot.db`. Each new generation overwrites the same key; history is preserved by S3 versioning. avni-server's `/media/mobileDatabaseSqliteSnapshotUrl/download` signs that key directly — no listing, no sorting.
+
+Each upload sets S3 object metadata used by the scheduler's freshness check:
+- `x-amz-meta-generated-at` — ISO timestamp of upload
+- `x-amz-meta-snapshot-server-sha` — `SNAPSHOT_SERVER_COMMIT_SHA` env var (falls back to `dev`)
+- `x-amz-meta-client-schema-version` — max drizzle migration index bundled at build time
+
+Inspect a local file:
 ```bash
 sqlite3 snapshots/apfodisha/omzz@apfodisha/2026-05-06T08-55-13Z.db
 .tables
@@ -114,6 +123,19 @@ SELECT count(*) FROM individual;
 SELECT entity_name, entity_type_uuid, datetime(loaded_since/1000, 'unixepoch')
   FROM entity_sync_status WHERE loaded_since > 0;
 ```
+
+### Cleaning up legacy timestamped S3 keys
+
+If the bucket still holds old `<isoTimestamp>.db` objects from before the switch to a stable key, run the one-shot cleanup script per organisation:
+
+```bash
+# preview
+npm run cleanup-legacy-snapshots -- --media-directory apfodisha
+# actually delete
+npm run cleanup-legacy-snapshots -- --media-directory apfodisha --apply
+```
+
+It deletes everything under `<mediaDirectory>/snapshots/<username>/` whose basename isn't `snapshot.db`. Defaults to dry-run.
 
 ## Excluded entities
 

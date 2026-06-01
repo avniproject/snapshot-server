@@ -6,17 +6,28 @@ import {Persister} from '../snapshotdb/Persister.js';
 import {SyncRunner} from './SyncRunner.js';
 import {requestContext} from '../rest/requestContext.js';
 import {S3Uploader} from '../s3/S3Uploader.js';
+import {journal as drizzleJournal} from '../snapshotdb/drizzleMigrations.js';
 import {logger} from '../util/logger.js';
 import {config} from '../config.js';
+
+// Highest applied drizzle migration index — the client schema version.
+// Computed once at module load; the migrations are bundled at build time.
+const CLIENT_SCHEMA_VERSION = String(
+    Math.max(...(drizzleJournal.entries ?? []).map(e => e.idx))
+);
 
 /**
  * Runs one snapshot end-to-end for a single user.
  *
  * Workers call run(job, requestRow) per claimed job. The snapshot is written
- * to a local SQLite file, uploaded to S3 at
- *   <bucket>/<media_directory>/snapshots/<username>/<isoTimestamp>.db
- * (when S3 is configured), then the local file is deleted. The S3 key + sha256
- * + size go back to the worker so it can record them on the user_job row.
+ * to a local SQLite file at a stable path, uploaded to S3 at the same stable
+ * key shape
+ *   <bucket>/<media_directory>/snapshots/<username>/snapshot.db
+ * (when S3 is configured), then the local file is deleted. At most one
+ * snapshot file per user exists on disk at any time. When a resume_cursor
+ * is present the existing partial file is reused; otherwise any stale
+ * orphan from a previous failed run is wiped first so we don't inherit
+ * half-written state. S3 versioning preserves history server-side.
  *
  * `mode = 'clean'` deletes the user's prior local snapshots before running
  * AND, when S3 is enabled, deletes the user's S3 prefix so old uploads are
@@ -34,21 +45,22 @@ export class SnapshotJob {
             const isClean = requestRow?.mode === 'clean';
             const cursor = (!isClean && job.resume_cursor) ? this._parseCursor(job.resume_cursor) : null;
 
-            const localPath = cursor?.localPath ?? path.resolve(
+            // Stable local path — one snapshot per user at any time.
+            const localPath = path.resolve(
                 config.snapshotsDir,
                 fsSafe(requestRow.db_user),
                 fsSafe(job.username),
-                `${timestampForFilename()}.db`
+                'snapshot.db'
             );
-            // No .zip extension on the key even though S3Uploader uploads zipped
-            // bytes. avni-server signs the download URL via generateMediaUploadUrl,
-            // which binds Content-Type into the signature based on the file
-            // extension — a .zip key would require the device to send a matching
-            // Content-Type header on GET or S3 returns 403. The Realm
-            // mobile-database-backup flow avoids this the same way (extensionless
-            // key). The device's BackupRestoreSqliteService unzips by content,
-            // not extension.
-            const s3Key = `${requestRow.media_directory}/snapshots/${job.username}/${path.basename(localPath)}`;
+            // Stable S3 key. avni-server's resolver signs it directly — no
+            // list+sort. S3 versioning preserves history of past generations.
+            // Extensionless `.db` (not `.db.zip`) even though the body is
+            // zipped: avni-server signs via generateMediaUploadUrl which binds
+            // Content-Type into the signature from the extension, and `.zip`
+            // would require the device to send Content-Type: application/zip
+            // on the GET (it doesn't, and S3 returns 403). The device's
+            // BackupRestoreSqliteService unzips by content, not by extension.
+            const s3Key = `${requestRow.media_directory}/snapshots/${job.username}/snapshot.db`;
 
             if (isClean) {
                 this._cleanUserSnapshotDir(path.dirname(localPath));
@@ -56,6 +68,13 @@ export class SnapshotJob {
                     const userS3Prefix = `${requestRow.media_directory}/snapshots/${job.username}/`;
                     await this.s3Uploader.deletePrefix(userS3Prefix);
                 }
+            } else if (!cursor && fs.existsSync(localPath)) {
+                // Not resuming and not cleaning, but a file is sitting at the
+                // stable path — that's a stale orphan from a previous failure
+                // that didn't write a cursor. Wipe it so this fresh run starts
+                // on an empty schema rather than inheriting half-written
+                // entity_sync_status rows.
+                this._removeLocal(localPath);
             }
 
             logger.info(
@@ -94,7 +113,15 @@ export class SnapshotJob {
             // When S3 is disabled we keep the local file and return its path.
             let result;
             if (this.s3Uploader.isEnabled()) {
-                const uploaded = await this.s3Uploader.uploadFile(localPath, s3Key);
+                // Object metadata for the scheduler's freshness check
+                // (sub-issue #1942/3). All values must be strings (S3
+                // user-metadata is x-amz-meta-* on the wire).
+                const metadata = {
+                    'generated-at': new Date().toISOString(),
+                    'snapshot-server-sha': config.commitSha,
+                    'client-schema-version': CLIENT_SCHEMA_VERSION,
+                };
+                const uploaded = await this.s3Uploader.uploadFile(localPath, s3Key, metadata);
                 this._removeLocal(localPath);
                 result = {
                     s3Key: uploaded.s3Key,
@@ -158,8 +185,4 @@ export class SnapshotJob {
 
 function fsSafe(s) {
     return String(s).replace(/[^a-zA-Z0-9._@+-]/g, '_');
-}
-
-function timestampForFilename() {
-    return new Date().toISOString().slice(0, 19).replace(/:/g, '-') + 'Z';
 }

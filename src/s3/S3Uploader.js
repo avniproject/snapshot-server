@@ -48,8 +48,14 @@ export class S3Uploader {
      * mobile-database-backup shape: the device downloads a zip, unzips it,
      * and finds a single DB file inside. sha256 / sizeBytes returned are of
      * the zip payload (what actually lives in S3).
+     *
+     * `metadata` (optional) is set as S3 object user-metadata
+     * (x-amz-meta-* on the wire). Values must be strings. Used by the
+     * scheduler's freshness check (sub-issue #1942/3) to skip regeneration
+     * when the snapshot is recent enough AND the generating code + client
+     * schema haven't changed.
      */
-    async uploadFile(localPath, s3Key) {
+    async uploadFile(localPath, s3Key, metadata = {}) {
         const zip = new AdmZip();
         zip.addLocalFile(localPath, '', path.basename(localPath));
         const body = zip.toBuffer();
@@ -61,6 +67,7 @@ export class S3Uploader {
             Key: s3Key,
             Body: body,
             ContentType: 'application/zip',
+            Metadata: metadata,
         }));
 
         return {

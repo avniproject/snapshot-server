@@ -42,4 +42,10 @@ export const config = {
     awsRegion:         optional('OPENCHS_AWS_REGION',              'ap-south-1'),
     awsAccessKeyId:    optional('OPENCHS_IAM_USER_ACCESS_KEY',     ''),
     awsSecretAccessKey: optional('OPENCHS_IAM_USER_SECRET_ACCESS_KEY', ''),
+
+    // Recorded on uploaded snapshots as x-amz-meta-snapshot-server-sha so the
+    // scheduler's freshness check (sub-issue #1942/3) can detect that the
+    // generating code changed and re-run a user. Set on deploy; falls back to
+    // 'dev' when unset.
+    commitSha: optional('SNAPSHOT_SERVER_COMMIT_SHA', 'dev'),
 };
