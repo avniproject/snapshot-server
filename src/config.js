@@ -48,4 +48,11 @@ export const config = {
     // generating code changed and re-run a user. Set on deploy; falls back to
     // 'dev' when unset.
     commitSha: optional('SNAPSHOT_SERVER_COMMIT_SHA', 'dev'),
+
+    // Scheduler — drives all snapshot generation as of sub-issue #1942/3.
+    schedulerTickIntervalMs: intOpt('SCHEDULER_TICK_INTERVAL_MS', 3600000),
+    // A user's last successful snapshot is considered fresh for this long.
+    // Shorter values regenerate more often (cost: more S3 traffic); longer
+    // values mean devices see staler "fast sync" baselines.
+    freshnessThresholdHours: intOpt('FRESHNESS_THRESHOLD_HOURS', 24),
 };

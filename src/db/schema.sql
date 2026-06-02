@@ -13,20 +13,25 @@ CREATE TABLE IF NOT EXISTS snapshot_request (
 );
 
 CREATE TABLE IF NOT EXISTS snapshot_user_job (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    request_id    INTEGER NOT NULL REFERENCES snapshot_request(id) ON DELETE CASCADE,
-    username      TEXT    NOT NULL,
-    state         TEXT    NOT NULL CHECK (state IN ('queued', 'in_progress', 'ready', 'failed', 'cancelled')) DEFAULT 'queued',
-    attempt_count INTEGER NOT NULL DEFAULT 0,
-    last_error    TEXT,
-    started_at    INTEGER,
-    finished_at   INTEGER,
-    resume_cursor TEXT,
-    s3_key        TEXT,
-    sha256        TEXT,
-    size_bytes    INTEGER,
-    worker_id     TEXT,
-    locked_at     INTEGER,
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id           INTEGER NOT NULL REFERENCES snapshot_request(id) ON DELETE CASCADE,
+    username             TEXT    NOT NULL,
+    state                TEXT    NOT NULL CHECK (state IN ('queued', 'in_progress', 'ready', 'failed', 'cancelled')) DEFAULT 'queued',
+    attempt_count        INTEGER NOT NULL DEFAULT 0,
+    last_error           TEXT,
+    started_at           INTEGER,
+    finished_at          INTEGER,
+    resume_cursor        TEXT,
+    s3_key               TEXT,
+    sha256               TEXT,
+    size_bytes           INTEGER,
+    worker_id            TEXT,
+    locked_at            INTEGER,
+    -- snapshot-server commit SHA and client schema version at the moment this
+    -- job uploaded. The scheduler's freshness check compares these to the
+    -- current values and re-enqueues the user when either has drifted.
+    generated_by_sha     TEXT,
+    generated_for_schema TEXT,
     UNIQUE (request_id, username)
 );
 

@@ -111,11 +111,13 @@ export class SnapshotJob {
 
             // Upload (when configured) → returns the canonical s3Key + sha256 + size.
             // When S3 is disabled we keep the local file and return its path.
+            // generatedBySha + generatedForSchema are persisted on the job row
+            // (regardless of S3) so the scheduler's local-DB freshness check
+            // can detect when either has drifted and re-enqueue the user.
             let result;
             if (this.s3Uploader.isEnabled()) {
-                // Object metadata for the scheduler's freshness check
-                // (sub-issue #1942/3). All values must be strings (S3
-                // user-metadata is x-amz-meta-* on the wire).
+                // Object metadata mirrors the persisted columns. All values
+                // must be strings (S3 user-metadata is x-amz-meta-* on the wire).
                 const metadata = {
                     'generated-at': new Date().toISOString(),
                     'snapshot-server-sha': config.commitSha,
@@ -127,6 +129,8 @@ export class SnapshotJob {
                     s3Key: uploaded.s3Key,
                     sha256: uploaded.sha256,
                     sizeBytes: uploaded.sizeBytes,
+                    generatedBySha: config.commitSha,
+                    generatedForSchema: CLIENT_SCHEMA_VERSION,
                 };
             } else {
                 const stats = fs.statSync(localPath);
@@ -134,6 +138,8 @@ export class SnapshotJob {
                     s3Key: localPath,
                     sha256: null,
                     sizeBytes: stats.size,
+                    generatedBySha: config.commitSha,
+                    generatedForSchema: CLIENT_SCHEMA_VERSION,
                 };
             }
 

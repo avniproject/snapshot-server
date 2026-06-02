@@ -116,24 +116,26 @@ export class SnapshotRequestRepository {
         return tx();
     }
 
-    markSnapshotUserJobReady(jobId, {s3Key, sha256, sizeBytes}) {
+    markSnapshotUserJobReady(jobId, {s3Key, sha256, sizeBytes, generatedBySha, generatedForSchema}) {
         const tx = this.db.transaction(() => {
             const row = this.db.prepare('SELECT request_id FROM snapshot_user_job WHERE id = ?').get(jobId);
             if (!row) return;
             this.db
                 .prepare(`
                     UPDATE snapshot_user_job
-                    SET state         = 'ready',
-                        finished_at   = unixepoch(),
-                        s3_key        = ?,
-                        sha256        = ?,
-                        size_bytes    = ?,
-                        last_error    = NULL,
-                        resume_cursor = NULL,
-                        locked_at     = NULL
+                    SET state                = 'ready',
+                        finished_at          = unixepoch(),
+                        s3_key               = ?,
+                        sha256               = ?,
+                        size_bytes           = ?,
+                        generated_by_sha     = ?,
+                        generated_for_schema = ?,
+                        last_error           = NULL,
+                        resume_cursor        = NULL,
+                        locked_at            = NULL
                     WHERE id = ?
                 `)
-                .run(s3Key, sha256, sizeBytes, jobId);
+                .run(s3Key, sha256, sizeBytes, generatedBySha, generatedForSchema, jobId);
             this._recomputeRequestState(row.request_id);
         });
         tx();

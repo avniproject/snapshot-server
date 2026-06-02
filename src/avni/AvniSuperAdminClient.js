@@ -4,66 +4,40 @@ import {logger} from '../util/logger.js';
 import {config} from '../config.js';
 
 /**
- * Talks to avni-server's super-admin endpoints to:
- *   1. fetch an organisation by its dbUser
- *   2. enumerate the active users of that organisation
+ * Talks to avni-server's super-admin endpoints to drive the scheduler:
+ *   1. enumerate orgs opted into snapshot generation
+ *   2. fetch each org's users with their last sync_telemetry timestamp
  *
  * Both endpoints require super-admin privileges (the account-admin `admin`
  * user seeded by V1_142.1 has them by default). All calls run inside a
  * requestContext.run with username = config.adminUser so the avni-server
  * `IdpType=none` filter authenticates as that super-admin.
- *
- * Endpoints used:
- *   GET /organisation/search/find?dbUser=<dbUser>&size=100  (assertIsSuperAdmin)
- *   GET /user/search/findByOrganisation?organisationId=<id>&page=&size=
- *       (PrivilegeType.EditUserConfiguration)
- *
- * Note: /organisation/search/find does a case-insensitive LIKE '%dbUser%' on
- * the server (see OrganisationController.java) — so dbUser=apfodisha would
- * also match apfodisha_dev, apfodishamaha, etc. We fetch a generous page and
- * filter client-side for an exact match before returning.
  */
 export class AvniSuperAdminClient {
-    constructor({adminUser = config.adminUser, baseUrl = config.avniServerUrl, pageSize = 200} = {}) {
+    constructor({adminUser = config.adminUser, baseUrl = config.avniServerUrl} = {}) {
         this.adminUser = adminUser;
         this.baseUrl = baseUrl.replace(/\/$/, '');
-        this.pageSize = pageSize;
     }
 
-    async getOrgByDbUser(dbUser) {
+    // Scheduler entrypoint: orgs that have opted into snapshot generation via
+    // OrganisationConfig.enableSqliteSnapshotGeneration. avni-server returns
+    // them already sorted by enabledAt asc (oldest-opted-in first).
+    async listSqliteSnapshotEnabledOrgs() {
         return this._asAdmin(async () => {
-            const url = `${this.baseUrl}/organisation/search/find?dbUser=${encodeURIComponent(dbUser)}&size=100`;
-            const page = await getJSON(url);
-            const content = page?.content ?? page?._embedded?.organisations ?? [];
-            const exact = content.filter(o => o?.dbUser === dbUser);
-            if (exact.length === 0) return null;
-            if (exact.length > 1) {
-                const ids = exact.map(o => o.id).join(', ');
-                throw new Error(`Expected one organisation with dbUser="${dbUser}", found ${exact.length} (ids: ${ids})`);
-            }
-            return exact[0];
+            const url = `${this.baseUrl}/organisation/sqliteSnapshotEnabled`;
+            const resp = await getJSON(url);
+            return Array.isArray(resp) ? resp : [];
         });
     }
 
-    async listUsersForOrg(organisationId) {
+    // Per-user lastSyncedAt (max sync_telemetry.sync_end_time). Used by the
+    // scheduler to order users within an org recent-activity-first. Returns
+    // [{id, uuid, username, lastSyncedAt: string|null}, ...].
+    async listUserActivitiesForOrg(organisationId) {
         return this._asAdmin(async () => {
-            const users = [];
-            let page = 0;
-            while (true) {
-                const url = `${this.baseUrl}/user/search/findByOrganisation`
-                    + `?organisationId=${organisationId}`
-                    + `&page=${page}`
-                    + `&size=${this.pageSize}`;
-                const resp = await getJSON(url);
-                const content = resp?.content ?? resp?._embedded?.users ?? [];
-                for (const u of content) {
-                    if (u?.username && !u.voided && !u.isVoided) users.push(u);
-                }
-                const totalPages = resp?.totalPages ?? resp?.page?.totalPages ?? 1;
-                page += 1;
-                if (page >= totalPages) break;
-            }
-            return users;
+            const url = `${this.baseUrl}/user/activities?organisationId=${organisationId}`;
+            const resp = await getJSON(url);
+            return Array.isArray(resp) ? resp : [];
         });
     }
 

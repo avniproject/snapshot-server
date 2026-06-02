@@ -13,33 +13,42 @@ cp .env.example .env
 
 ## Running a snapshot
 
-Start the server and POST to the request API:
+Snapshot generation is scheduler-driven. To trigger runs for an org:
 
-```bash
-npm start
-# in another shell:
-curl -X POST http://localhost:3000/requests \
-  -H 'Content-Type: application/json' \
-  -d '{"dbUser":"<dbUser>","mode":"normal"}'
-```
+1. In the avni-webapp admin UI, flip **Enable SQLite snapshot generation** on the target organisation's settings (writes `OrganisationConfig.enableSqliteSnapshotGeneration = true`).
+2. snapshot-server picks the org up on its next scheduler tick (default 1 hour, see `SCHEDULER_TICK_INTERVAL_MS`). Per tick it lists opted-in orgs, evaluates per-user freshness against the local state DB, and enqueues only stale users.
+3. Workers FIFO-claim from the queue and upload each snapshot to S3.
 
-The handler resolves `dbUser → orgId` via avni-server, enumerates active users, and enqueues one snapshot job per user. Workers pick jobs up and write each snapshot to `snapshots/<dbUser>/<username>/<isoTimestamp>.db`.
+There is no HTTP initiation endpoint — `POST /requests` was removed in favour of the scheduler. See `src/api/server.js` for the remaining ops endpoints (status, restart, cancel).
 
-See `src/api/server.js` for the full endpoint set.
+### Scheduler config
+
+| Env | Default | Effect |
+|---|---|---|
+| `SCHEDULER_TICK_INTERVAL_MS` | `3600000` (1h) | How often the scheduler wakes. A long-running tick blocks the next firing (no overlap). |
+| `FRESHNESS_THRESHOLD_HOURS` | `24` | A user's last successful snapshot is considered fresh for this long. After it expires the user is re-enqueued. |
+| `SNAPSHOT_SERVER_COMMIT_SHA` | `dev` | Recorded on every snapshot. When the deployed SHA changes, all users go stale and are regenerated on the next tick. |
+
+### QA flow
+
+To smoke-test against a staging org:
+
+1. Toggle the org's `enableSqliteSnapshotGeneration` from the webapp admin UI.
+2. Watch snapshot-server logs (`make start`) for `tick: enqueued snapshot request` lines.
+3. Inspect progress with `GET /requests/<dbUser>-<orgSeq>` or `make stats`.
+
+To force regeneration of a user that's still within the freshness window, you can either bump `SNAPSHOT_SERVER_COMMIT_SHA` (forces every user stale) or update their `snapshot_user_job.finished_at` in the state DB to a past time outside the window.
 
 ## Design notes
 
 ### Why `createSnapshotRequestAndUserJobs` writes both tables in one transaction
 
-The `POST /requests` handler calls `createSnapshotRequestAndUserJobs`, which inserts one `snapshot_request` row + N `snapshot_user_job` rows inside a single SQLite transaction before responding. We considered returning early (after the request insert) and writing the user_job rows in the background to shave latency, but kept the synchronous design. Reasons:
+The scheduler's tick calls `createSnapshotRequestAndUserJobs`, which inserts one `snapshot_request` row + N `snapshot_user_job` rows inside a single SQLite transaction. We considered splitting the write — request insert first, jobs streamed in after — but kept the synchronous design. Reasons:
 
-1. **Atomicity.** The transaction guarantees: either the request and all its jobs commit together, or none does. Splitting it leaves orphan requests on any crash mid-write — visible in the API but with `counts: {}` and no jobs to claim. We'd then need a startup sweeper to detect and repair that state.
-2. **No worker race window.** Workers poll `WHERE state = 'queued' LIMIT 1`. If we inserted jobs after returning, a worker that wakes up between the request insert and the job inserts would see no work, idle for `idlePollMs`, and add latency we'd then have to subtract from any "win".
-3. **Consistent observability.** `GET /requests/:key` returns the same view the moment the POST returns 201. Backgrounding the writes would make the API briefly inconsistent (caller sees the request but no jobs).
-4. **Errors stay visible.** A FK / constraint failure surfaces as a synchronous 500 to the caller. With background writes, errors would only show in logs.
-5. **Performance budget.** The actual latency on `POST /requests` is dominated by two avni-server HTTP calls (`/organisation/search/find` + paginated `/user/search/findByOrganisation`), 100–700+ ms total. The local SQLite inserts are 1–3% of that — backgrounding them saves a fraction of the wait at all the costs above.
-
-If we ever need to make POST faster, the wins live in caching the org/user lookups, not in skipping the transactional write.
+1. **Atomicity.** The transaction guarantees: either the request and all its jobs commit together, or none does. Splitting it leaves orphan requests on any crash mid-write — visible to ops with `counts: {}` and no jobs to claim. We'd then need a startup sweeper to detect and repair that state.
+2. **No worker race window.** Workers poll `WHERE state = 'queued' LIMIT 1`. If we inserted jobs after the request, a worker that wakes up between the two writes would see no work, idle for `idlePollMs`, and add latency for no win.
+3. **Consistent observability.** `GET /requests/:key` returns a complete view as soon as the tick commits.
+4. **Errors stay visible.** A FK / constraint failure surfaces synchronously inside the tick. With background writes, errors would only show in logs.
 
 ## Vendored modules
 
@@ -115,9 +124,9 @@ Each upload sets S3 object metadata used by the scheduler's freshness check:
 - `x-amz-meta-snapshot-server-sha` — `SNAPSHOT_SERVER_COMMIT_SHA` env var (falls back to `dev`)
 - `x-amz-meta-client-schema-version` — max drizzle migration index bundled at build time
 
-Inspect a local file:
+Inspect a local file (the upload deletes it post-success — present only mid-run or for a failed user):
 ```bash
-sqlite3 snapshots/apfodisha/omzz@apfodisha/2026-05-06T08-55-13Z.db
+sqlite3 snapshots/apfodisha/omzz@apfodisha/snapshot.db
 .tables
 SELECT count(*) FROM individual;
 SELECT entity_name, entity_type_uuid, datetime(loaded_since/1000, 'unixepoch')

@@ -51,6 +51,8 @@ export class Worker {
                     s3Key: result.s3Key,
                     sha256: result.sha256,
                     sizeBytes: result.sizeBytes,
+                    generatedBySha: result.generatedBySha,
+                    generatedForSchema: result.generatedForSchema,
                 });
             } catch (e) {
                 logger.error(
