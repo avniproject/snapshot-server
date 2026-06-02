@@ -5,8 +5,9 @@ import {Pool} from './worker/Pool.js';
 import {createApi} from './api/server.js';
 import {AvniSuperAdminClient} from './avni/AvniSuperAdminClient.js';
 import {Scheduler} from './scheduler/Scheduler.js';
-import {FreshnessChecker} from './scheduler/FreshnessChecker.js';
+import {TickPlanner} from './scheduler/TickPlanner.js';
 import {runTick} from './scheduler/tick.js';
+import {MAX_FAILURE_ATTEMPTS} from './snapshot/retryPolicy.js';
 import {journal as drizzleJournal} from './snapshotdb/drizzleMigrations.js';
 import {logger} from './util/logger.js';
 import {config} from './config.js';
@@ -22,14 +23,16 @@ pool.start();
 const currentSchemaVersion = String(
     Math.max(...(drizzleJournal.entries ?? []).map(e => e.idx))
 );
-const freshnessChecker = new FreshnessChecker({
+const tickPlanner = new TickPlanner({
+    snapshotRequestRepository,
     currentSha: config.commitSha,
     currentSchemaVersion,
-    thresholdSeconds: config.freshnessThresholdHours * 3600,
+    freshnessThresholdSeconds: config.freshnessThresholdHours * 3600,
+    crashTimeoutSeconds: config.crashTimeoutHours * 3600,
 });
 const scheduler = new Scheduler({
     intervalMs: config.schedulerTickIntervalMs,
-    tick: () => runTick({avniSuperAdminClient, snapshotRequestRepository, freshnessChecker}),
+    tick: () => runTick({avniSuperAdminClient, snapshotRequestRepository, tickPlanner}),
 });
 scheduler.start();
 
@@ -43,6 +46,8 @@ const server = app.listen(config.httpPort, () =>
             adminUser: config.adminUser,
             tickIntervalMs: config.schedulerTickIntervalMs,
             freshnessThresholdHours: config.freshnessThresholdHours,
+            maxFailureAttempts: MAX_FAILURE_ATTEMPTS,
+            crashTimeoutHours: config.crashTimeoutHours,
         },
         'snapshot-server listening'
     ));

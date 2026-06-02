@@ -1,4 +1,6 @@
 import {logger} from '../util/logger.js';
+import {isPermanentFailure} from '../snapshot/errors.js';
+import {computeNextRetryAt, MAX_FAILURE_ATTEMPTS} from '../snapshot/retryPolicy.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -41,9 +43,15 @@ export class Worker {
             }
 
             try {
-                // Inside the try so any unexpected error here marks the job
-                // failed instead of crashing the whole worker loop.
+                // Everything inside the try so any unexpected error here
+                // (including a DB read on getSnapshotRequestById) marks the
+                // job failed instead of crashing the whole worker loop.
                 const requestRow = this.snapshotRequestRepository.getSnapshotRequestById(job.request_id);
+                const org = requestRow?.db_user;
+                logger.info(
+                    {worker: this.id, jobId: job.id, user: job.username, org, attempt: job.attempt_count, fromState: 'queued', toState: 'in_progress'},
+                    'snapshot job state transition'
+                );
                 const onCursorReady = (cursor) =>
                     this.snapshotRequestRepository.saveSnapshotUserJobResumeCursor(job.id, cursor);
                 const result = await this.snapshotJob.run(job, requestRow, {onCursorReady});
@@ -53,13 +61,28 @@ export class Worker {
                     sizeBytes: result.sizeBytes,
                     generatedBySha: result.generatedBySha,
                     generatedForSchema: result.generatedForSchema,
+                    expectedWorkerId: job.worker_id,
                 });
+                logger.info(
+                    {worker: this.id, jobId: job.id, user: job.username, org, attempt: job.attempt_count, fromState: 'in_progress', toState: 'ready'},
+                    'snapshot job state transition'
+                );
             } catch (e) {
+                const permanent = isPermanentFailure(e);
+                const nextRetryAt = computeNextRetryAt({
+                    attemptCount: job.attempt_count,
+                    permanent,
+                    maxAttempts: MAX_FAILURE_ATTEMPTS,
+                });
                 logger.error(
-                    {worker: this.id, jobId: job.id, user: job.username, err: e.message, stack: e.stack},
+                    {worker: this.id, jobId: job.id, user: job.username, attempt: job.attempt_count, permanent, nextRetryAt, err: e.message, stack: e.stack},
                     'snapshot job failed'
                 );
-                this.snapshotRequestRepository.markSnapshotUserJobFailed(job.id, e);
+                this.snapshotRequestRepository.markSnapshotUserJobFailed(job.id, e, {nextRetryAt, expectedWorkerId: job.worker_id});
+                logger.info(
+                    {worker: this.id, jobId: job.id, user: job.username, attempt: job.attempt_count, fromState: 'in_progress', toState: 'failed', nextRetryAt, permanent},
+                    'snapshot job state transition'
+                );
             }
         }
         logger.info({worker: this.id}, 'worker stopped');

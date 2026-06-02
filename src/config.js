@@ -55,4 +55,8 @@ export const config = {
     // Shorter values regenerate more often (cost: more S3 traffic); longer
     // values mean devices see staler "fast sync" baselines.
     freshnessThresholdHours: intOpt('FRESHNESS_THRESHOLD_HOURS', 24),
+    // How long an in_progress row can sit before the planner treats it as
+    // crashed (worker died mid-job) and restarts it in place. Should be
+    // comfortably larger than the longest legitimate single-user snapshot.
+    crashTimeoutHours: intOpt('CRASH_TIMEOUT_HOURS', 4),
 };

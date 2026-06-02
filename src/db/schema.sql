@@ -32,6 +32,12 @@ CREATE TABLE IF NOT EXISTS snapshot_user_job (
     -- current values and re-enqueues the user when either has drifted.
     generated_by_sha     TEXT,
     generated_for_schema TEXT,
+    -- Epoch seconds. Only meaningful when state='failed': the scheduler will
+    -- restart-in-place once now() reaches this value. NULL on a failed row
+    -- means "no auto-retry" (permanent failure or hit MAX_ATTEMPTS); manual
+    -- restart via the ops endpoint clears the row's state back to 'queued'.
+    -- For non-failed states this column is meaningless and stays NULL.
+    next_retry_at        INTEGER,
     UNIQUE (request_id, username)
 );
 

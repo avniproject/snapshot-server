@@ -46,8 +46,14 @@ export function createApi({snapshotRequestRepository}) {
         const restarted = [];
         for (const job of jobs) {
             if (job.state === 'failed' || job.state === 'cancelled') {
-                snapshotRequestRepository.restartSnapshotUserJob(job.id);
-                restarted.push(job.username);
+                const r = snapshotRequestRepository.restartSnapshotUserJob(job.id, {expectedFromState: job.state});
+                if (r) {
+                    restarted.push(job.username);
+                    logger.info(
+                        {jobId: job.id, user: r.username, org: r.dbUser, fromState: r.fromState, toState: 'queued', restartedBy: 'ops'},
+                        'snapshot job state transition'
+                    );
+                }
             }
         }
         res.json({restarted});
@@ -58,7 +64,13 @@ export function createApi({snapshotRequestRepository}) {
         if (jobs === null) return res.status(404).end();
         const job = jobs.find(j => j.username === req.params.username);
         if (!job) return res.status(404).json({error: 'no such user job in this request'});
-        snapshotRequestRepository.restartSnapshotUserJob(job.id);
+        const r = snapshotRequestRepository.restartSnapshotUserJob(job.id, {expectedFromState: job.state});
+        if (r) {
+            logger.info(
+                {jobId: job.id, user: r.username, org: r.dbUser, fromState: r.fromState, toState: 'queued', restartedBy: 'ops'},
+                'snapshot job state transition'
+            );
+        }
         res.json({ok: true, jobId: job.id});
     });
 
@@ -69,6 +81,10 @@ export function createApi({snapshotRequestRepository}) {
         for (const job of jobs) {
             if (job.state === 'queued' && snapshotRequestRepository.cancelSnapshotUserJob(job.id) === 1) {
                 cancelled.push(job.username);
+                logger.info(
+                    {jobId: job.id, user: job.username, fromState: 'queued', toState: 'cancelled', cancelledBy: 'ops'},
+                    'snapshot job state transition'
+                );
             }
         }
         res.json({cancelled});
