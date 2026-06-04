@@ -8,7 +8,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "start": "node src/index.js",
+    "start": "node src/index.js 2>&1 | tee -a snapshot-server.log",
     "compare-dbs": "node scripts/compare-dbs.js",
     "stats": "node scripts/snapshot-stats.js",
     "test": "node --test"
